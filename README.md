@@ -9,14 +9,14 @@ src/
   lib/supabase.ts        cliente Supabase e tipos
 supabase/schema.sql      tabelas, índices, RLS e RPCs
 public/                  manifest e service worker
-supabase/                schema inicial e migrações v2/v3/v4
+supabase/                schema inicial e migrações v2/v3/v4/v5
 ```
 
 ## Rodar localmente
 
 1. Instale Node.js 20+ e dependências com `npm install`.
 2. Copie `.env.example` para `.env.local` e informe URL e chave anon do Supabase.
-3. Execute `supabase/schema.sql`, `supabase/schema-v2.sql`, `supabase/schema-v3.sql` e `supabase/schema-v4.sql` nessa ordem no SQL Editor do projeto Supabase.
+3. Execute `supabase/schema.sql`, `supabase/schema-v2.sql`, `supabase/schema-v3.sql`, `supabase/schema-v4.sql` e `supabase/schema-v5.sql` nessa ordem no SQL Editor do projeto Supabase.
 4. Inicie com `npm run dev`; abra `/caixa` para o caixa por chapa, `/portal-auditoria` para consultas e `/estoque/entrada` para entrada em lote. `/` mantém a tela de PDV mobile inicial.
 5. Publique em HTTPS para permitir acesso à câmera e instale como PWA pelo navegador.
 
@@ -31,6 +31,7 @@ PIN numérico de seis dígitos é um segredo de baixa entropia. A migração v4 
 - `finalizar_venda_completa` bloqueia carrinho e variações, confere estoque, registra venda/itens, cliente e troca, movimenta o estoque em uma transação PostgreSQL. Exige abertura de caixa para o PDV e registra dados da POS quando escolhida.
 - `schema-v2.sql` adiciona chapa/cargo, PDVs, POS, trocas, abertura/fundo de caixa, sangrias, cancelamento/estorno, Relatório Z e portal de auditoria. `schema-v3.sql` amplia os cargos para `lider`, exige autorização e motivo em ações críticas, grava `logs_autorizacao_lideranca`, aplica desconto auditável e habilita cupom de troca sem preços (F10).
 - `schema-v4.sql` revoga gravações diretas do navegador nas tabelas, restringe entrada de estoque à liderança com trilha de movimentação, limita auditoria a supervisor/gerente, controla o crédito da troca pelo preço devolvido e habilita Realtime para itens de carrinho.
+- `schema-v5.sql` adiciona nome, URL de logotipo e cores por loja. O tema é carregado após a autenticação e atualizado via Realtime. Gerentes e supervisores podem configurar em `/admin/identidade`.
 - `CaixaDesktop` implementa N, Z, F2, T, D, Espaço, F3/F4/F6/F7/F8/F9/F10. O backup local do carrinho fica em `sessionStorage` durante sincronização; os dados persistentes seguem no Supabase.
 - Crie operadores com cargo `assistente`, `lider`, `supervisor` ou `gerente`. Para a migração existente, preencha chapas únicas antes de exigir `chapa NOT NULL` na sua política operacional.
 - As políticas RLS restringem os dados por loja derivada do usuário autenticado. Faça o provisionamento inicial de loja/produtos por backend administrativo, nunca pela chave anon sem política apropriada.
