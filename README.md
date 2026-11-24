@@ -9,14 +9,14 @@ src/
   lib/supabase.ts        cliente Supabase e tipos
 supabase/schema.sql      tabelas, índices, RLS e RPCs
 public/                  manifest e service worker
-supabase/                schema inicial e migrações v2/v3/v4/v5
+supabase/                schema inicial e migrações v2/v3/v4/v5/v6/v7
 ```
 
 ## Rodar localmente
 
 1. Instale Node.js 20+ e dependências com `npm install`.
 2. Copie `.env.example` para `.env.local` e informe URL e chave anon do Supabase.
-3. Execute `supabase/schema.sql`, `supabase/schema-v2.sql`, `supabase/schema-v3.sql`, `supabase/schema-v4.sql`, `supabase/schema-v5.sql` e `supabase/schema-v6.sql` nessa ordem no SQL Editor do projeto Supabase.
+3. Execute `supabase/schema.sql`, `supabase/schema-v2.sql`, `supabase/schema-v3.sql`, `supabase/schema-v4.sql`, `supabase/schema-v5.sql`, `supabase/schema-v6.sql` e `supabase/schema-v7.sql` nessa ordem no SQL Editor do projeto Supabase.
 4. Inicie com `npm run dev`; abra `/caixa` para o caixa por chapa, `/portal-auditoria` para consultas e `/estoque/entrada` para entrada em lote. `/` mantém a tela de PDV mobile inicial.
 5. Publique em HTTPS para permitir acesso à câmera e instale como PWA pelo navegador.
 
@@ -31,9 +31,9 @@ A rota administrativa valida a sessão Supabase e uma lista de e-mails autorizad
 
 ## Provisionamento dos operadores
 
-O login mantém a sessão por Supabase Auth. Para cada operador, crie um usuário Auth por fluxo administrativo confiável, com e-mail sintético único e senha PIN, depois grave `auth_user_id`, `auth_email`, `cpf`, `chapa`, `cargo` e `pin_hash = crypt(PIN, gen_salt('bf'))` em `operadores`. Crie também o PDV com código único e configure esse código no terminal. Nunca exponha a chave `service_role` no browser. A RPC `login_chapa` confere a chapa e o hash antes de devolver o endereço Auth usado pelo cliente.
+O login mantém a sessão por Supabase Auth. O fluxo administrativo cria uma senha Auth aleatória separada do PIN; o PIN fica em hash bcrypt em `operadores` e a senha Auth fica na tabela interna `operador_segredos`, sem leitura direta pelo cliente. A RPC `login_chapa` exige código da loja, chapa e PIN; somente após validar o PIN ela devolve a credencial Auth necessária ao login. Nunca exponha a chave secreta/service_role no browser.
 
-PIN numérico de seis dígitos é um segredo de baixa entropia. A migração v4 ainda não implementa rate limit de login. Em produção, coloque o login atrás de uma Edge Function com limitação por chapa/IP/dispositivo, atraso progressivo, trilha de auditoria, bloqueio temporário e monitoramento; configure expiração/recuperação segura de PIN. Não libere a RPC pública diretamente na internet sem esse controle. Considere credencial maior ou passkey para caixas compartilhados.
+PIN numérico de seis dígitos é um segredo de baixa entropia. A migração v7 adiciona bloqueio temporário por tentativas de login e validação de liderança, além de tokens de uso único com expiração para ações protegidas. Antes de produção, revise o rate limit/IP no ambiente publicado, monitore bloqueios e defina recuperação segura do PIN. Considere credencial mais forte para caixas compartilhados.
 
 ## Operação e limites desta base
 
@@ -42,6 +42,7 @@ PIN numérico de seis dígitos é um segredo de baixa entropia. A migração v4 
 - `schema-v4.sql` revoga gravações diretas do navegador nas tabelas, restringe entrada de estoque à liderança com trilha de movimentação, limita auditoria a supervisor/gerente, controla o crédito da troca pelo preço devolvido e habilita Realtime para itens de carrinho.
 - `schema-v5.sql` adiciona nome, URL de logotipo e cores por loja. O tema é carregado após a autenticação e atualizado via Realtime. Gerentes e supervisores podem configurar em `/admin/identidade`.
 - `schema-v6.sql` adiciona o provisionamento restrito de novos clientes, gera um código de acesso por loja e exige esse código no login por chapa; `/admin/lojas` cadastra loja, primeiro PDV e gerente. O e-mail Auth do operador é sintético e o gerente entra com código da loja, chapa e PIN.
+- `schema-v7.sql` limita tentativas de PIN, separa a senha aleatória do Supabase Auth do PIN do operador e exige token de uso único para cancelar, estornar, descontar, abrir/sangrar ou fechar o caixa.
 - `CaixaDesktop` implementa N, Z, F2, T, D, Espaço, F3/F4/F6/F7/F8/F9/F10. O backup local do carrinho fica em `sessionStorage` durante sincronização; os dados persistentes seguem no Supabase.
 - Crie operadores com cargo `assistente`, `lider`, `supervisor` ou `gerente`. Para a migração existente, preencha chapas únicas antes de exigir `chapa NOT NULL` na sua política operacional.
 - As políticas RLS restringem os dados por loja derivada do usuário autenticado. Faça o provisionamento inicial de loja/produtos por backend administrativo, nunca pela chave anon sem política apropriada.
@@ -49,4 +50,4 @@ PIN numérico de seis dígitos é um segredo de baixa entropia. A migração v4 
 - A câmera usa `html5-qrcode`; o debounce é aplicado no callback para evitar a mesma etiqueta em sequência muito rápida. A permissão da câmera exige HTTPS. O beep tenta carregar `/beep.mp3`; caso não seja fornecido, vibração continua disponível.
 - A impressão do novo caixa e do Relatório Z é exclusiva para bobina de 80 mm. Configure o driver da impressora com essa largura.
 - Antes de produção: valide documentos fiscais e obrigações locais com contabilidade, políticas de retenção/consentimento, backup, observabilidade, gestão de usuários e regras de cancelamento/devolução. O recibo implementado é não fiscal.
-- Pendências conhecidas: rate limit e token de uso único para PINs de liderança; fortalecer/limitar tentativas do PIN de login antes de operação comercial; senha Supabase Auth separada do PIN; leitura de CPF/chapa restrita a RPCs; validar nota fiscal contra venda original; devolver crédito da troca em estorno e impedir autoautorização; proteger atalhos quando o foco sai do campo do código; configurar PDV por terminal sem valor padrão; gestão de planos e cobrança recorrente; pagamento misto; conferência de numerário no Z; integração NFC-e quando necessária.
+- Pendências conhecidas: revisar rate limit e monitoramento no ambiente publicado; leitura de CPF/chapa restrita a RPCs; validar nota fiscal contra venda original; devolver crédito da troca em estorno e impedir autoautorização; proteger atalhos quando o foco sai do campo do código; configurar PDV por terminal sem valor padrão; gestão de planos e cobrança recorrente; pagamento misto; conferência de numerário no Z; integração NFC-e quando necessária.

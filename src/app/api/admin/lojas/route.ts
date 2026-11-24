@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
+import { randomBytes } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 
 export const runtime = "nodejs";
@@ -94,12 +95,15 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Confira os campos obrigatórios, o CNPJ, o CPF, a chapa e o PIN de 6 dígitos." }, { status: 400 });
   }
 
+  // A senha do Supabase Auth é aleatória e nunca é o PIN. O PIN só é usado no banco, em hash.
+  const senhaAuth = randomBytes(32).toString("base64url");
   const storeId = crypto.randomUUID();
   const operatorId = crypto.randomUUID();
   const authEmail = `pdv-${operatorId}@login.invalid`;
+
   const { data: created, error: authError } = await access.adminClient.auth.admin.createUser({
     email: authEmail,
-    password: gerentePin,
+    password: senhaAuth,
     email_confirm: true,
     user_metadata: { loja_id: storeId, operador_id: operatorId, tipo: "gerente_loja" },
   });
@@ -122,6 +126,7 @@ export async function POST(request: NextRequest) {
     p_gerente_chapa: gerenteChapa,
     p_gerente_auth_email: authEmail,
     p_gerente_pin: gerentePin,
+    p_gerente_senha_auth: senhaAuth,
     p_auth_user_id: created.user.id,
   });
 
@@ -131,7 +136,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       error: duplicate
         ? "CNPJ ou chapa já cadastrado. Confira os dados e tente novamente."
-        : "Não foi possível salvar o cadastro. Confirme se a migração schema-v6.sql foi aplicada no Supabase.",
+        : "Não foi possível salvar o cadastro. Confirme se a migração schema-v7.sql foi aplicada no Supabase.",
     }, { status: duplicate ? 409 : 500 });
   }
 
