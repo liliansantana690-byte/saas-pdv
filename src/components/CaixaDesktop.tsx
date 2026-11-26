@@ -8,6 +8,40 @@ import { TenantBrandMark, useTenantBranding } from "./TenantBranding";
 type Item={id:string;variacao_id:string;quantidade:number;variacao:{sku:string;codigo_barras:string|null;cor:string;tamanho:string;preco:number;produto:{nome:string}}};
 type Operator={id:string;loja_id:string;nome:string;cargo:string;chapa:string};
 const brl=(n:number)=>Number(n||0).toLocaleString("pt-BR",{style:"currency",currency:"BRL"});
+const HELP_KEYS: [string,string,string?][] = [
+ ["X","Mostrar esta lista"],
+ ["F1","Calculadora"],
+ ["F2","Abrir operador"],
+ ["F3","Fechar operador"],
+ ["F4","Débito"],
+ ["F5","Crédito"],
+ ["F6","Dinheiro"],
+ ["F7","POS (maquininha): data, NSU e bandeira"],
+ ["F8","PIX com QR Code da loja","em breve"],
+ ["F9","Consultar preço"],
+ ["R","Devolução","em breve"],
+ ["T","Vale troca"],
+ ["D","Cupom de desconto","em breve"],
+ ["End","Desconto manual (matrícula da liderança)"],
+ ["W","Recuperar pedido"],
+ ["Z","Fechamento Z"],
+ ["G","Sangria"],
+ ["Insert","Vendedor","em breve"],
+ ["Delete","Cancelar item"],
+ ["PageDown","Alterar preço","em breve"],
+ ["Espaço","Finalizar venda"],
+ ["Esc","Fechar janela"],
+];
+// Cálculo sem eval: multiplicação e divisão primeiro, depois soma e subtração.
+function calcEval(s:string):number|null{
+ const t=s.replace(/\s+/g,"").replace(/,/g,".").match(/\d+(\.\d+)?|[+\-*/]/g); if(!t||t.length%2===0) return null;
+ const parts:(number|string)[]=[]; let cur=Number(t[0]); if(Number.isNaN(cur)) return null;
+ for(let i=1;i<t.length;i+=2){const op=t[i],n=Number(t[i+1]); if(Number.isNaN(n)) return null;
+  if(op==="*") cur*=n; else if(op==="/"){ if(n===0) return null; cur/=n; } else { parts.push(cur,op); cur=n; } }
+ parts.push(cur); let total=Number(parts[0]);
+ for(let j=1;j<parts.length;j+=2){const op=parts[j] as string,n=Number(parts[j+1]); total= op==="+"?total+n:total-n;}
+ return Math.round(total*100)/100;
+}
 const pinRegex=/^\d{6}$/;
 export default function CaixaDesktop(){
  const { brand: tenantBrand } = useTenantBranding();
@@ -16,6 +50,9 @@ export default function CaixaDesktop(){
  const [catalog,setCatalog]=useState<any[]>([]),[filtro,setFiltro]=useState(""),[ultimaVenda,setUltimaVenda]=useState<Receipt|null>(null),[online,setOnline]=useState(true),[agora,setAgora]=useState(()=>new Date());
  useEffect(()=>{if(!op)return;void supabase.from("produto_variacoes").select("id,sku,codigo_barras,cor,tamanho,preco,estoque,produto:produtos(nome)").order("sku").then(({data})=>setCatalog(data||[]));},[op]);
  useEffect(()=>{const t=setInterval(()=>setAgora(new Date()),30000);const on=()=>setOnline(true),off=()=>setOnline(false);window.addEventListener("online",on);window.addEventListener("offline",off);setOnline(navigator.onLine);return()=>{clearInterval(t);window.removeEventListener("online",on);window.removeEventListener("offline",off);};},[]);
+ const [helpOpen,setHelpOpen]=useState(false),[calcExpr,setCalcExpr]=useState(""),[priceQuery,setPriceQuery]=useState(""),[priceResult,setPriceResult]=useState<any>(null);
+ async function consultPrice(){const v=priceQuery.trim();if(!v)return;setPriceResult(null);const cols="sku,cor,tamanho,preco,estoque,produto:produtos(nome)";let {data}=await supabase.from("produto_variacoes").select(cols).eq("codigo_barras",v).maybeSingle();if(!data)({data}=await supabase.from("produto_variacoes").select(cols).eq("sku",v).maybeSingle());setPriceResult(data||"nao");}
+ function payWith(p:string){if(!rows.length)return;setPay(p);if(p==="pos")setModal("pos");setCheckout(true);}
  useEffect(()=>{setPdv(localStorage.getItem("pdv-code")||"523");setStoreAccessCode(localStorage.getItem("store-access-code")||""); const {data}=supabase.auth.onAuthStateChange(async(_e,s)=>{if(!s){setOp(null);return;} const {data:o}=await supabase.from("operadores").select("id,loja_id,nome,cargo,chapa").eq("auth_user_id",s.user.id).maybeSingle(); if(o){setOp(o);}}); void supabase.auth.getSession().then(async({data})=>{if(data.session){const {data:o}=await supabase.from("operadores").select("id,loja_id,nome,cargo,chapa").eq("auth_user_id",data.session.user.id).maybeSingle();if(o)setOp(o);}});return()=>data.subscription.unsubscribe();},[]);
  useEffect(()=>{localStorage.setItem("pdv-code",pdv);},[pdv]);
  const refresh=useCallback(async(id=cartId)=>{if(!id)return;const [{data,error:e},{data:trades},{data:cart}]=await Promise.all([supabase.from("carrinho_itens").select("id,variacao_id,quantidade,variacao:produto_variacoes(sku,codigo_barras,cor,tamanho,preco,produto:produtos(nome))").eq("carrinho_id",id),supabase.from("trocas").select("valor_credito").eq("carrinho_id",id).eq("status","pendente"),supabase.from("carrinhos_ativos").select("desconto_total").eq("id",id).single()]);if(e){setError(e.message);const backup=sessionStorage.getItem(`cart:${id}`);if(backup)setRows(JSON.parse(backup));}else{const list=(data||[]) as unknown as Item[];setRows(list);sessionStorage.setItem(`cart:${id}`,JSON.stringify(list));}setCredit((trades||[]).reduce((a,t)=>a+Number(t.valor_credito),0));setDiscount(Number(cart?.desconto_total||0));},[cartId]);
@@ -35,7 +72,36 @@ async function openTill(){try{const token=await autorizar("abertura_caixa");cons
 async function sangria(){try{const token=await autorizar("sangria");const {error:e}=await supabase.rpc("registrar_sangria",{p_pdv_codigo:pdv,p_valor:Number(withdraw),p_motivo:reason,p_token:token});if(e)throw e;setModal("");setWithdraw("");setManagerPin("");setReason("");}catch(err){setError(erro(err));}}
 async function cancel(){try{const token=await autorizar(cancelType==="item"?"cancelamento_item":"estorno_venda");const {error:e}=cancelType==="item"?await supabase.rpc("cancelar_item_carrinho",{p_carrinho_id:cartId,p_item_id:cancelTarget,p_motivo:reason,p_token:token}):await supabase.rpc("estornar_venda",{p_venda_id:cancelTarget,p_motivo:reason,p_token:token});if(e)throw e;setModal("");setCancelTarget("");setManagerPin("");setReason("");if(cancelType==="item")await refresh();}catch(err){setError(erro(err));}}
 async function applyDiscount(){if(!cartId)return;try{const token=await autorizar("desconto_manual");const {data,error:e}=await supabase.rpc("aplicar_desconto_carrinho",{p_carrinho_id:cartId,p_tipo:discountType,p_valor:Number(discountValue),p_token:token,p_motivo:reason});if(e)throw e;setDiscount(Number(data));setModal("");setManagerPin("");setReason("");setDiscountValue("");}catch(err){setError(erro(err));}}
- useEffect(()=>{const handler=(e:KeyboardEvent)=>{const el=e.target as HTMLElement;const typing=el instanceof HTMLInputElement||el instanceof HTMLTextAreaElement||el instanceof HTMLSelectElement; if((receipt||zreport)&&e.key==="Enter"){e.preventDefault();window.print();return;}if(receipt&&e.key==="F10"){e.preventDefault();setReceiptMode("troca");setTimeout(()=>window.print(),100);return;}if(e.key==="F2"){e.preventDefault();setModal("recover");return;}if(e.key==="F9"){e.preventDefault();setModal("cancel");return;}if(e.key.toLowerCase()==="d"&&!typing){e.preventDefault();setModal("discount");return;}if(e.key.toLowerCase()==="n"&&!typing){e.preventDefault();void lockOperator();return;}if(e.key.toLowerCase()==="z"&&!typing){e.preventDefault();setModal("z");return;}if(e.key.toLowerCase()==="t"&&!typing){e.preventDefault();setModal("trade");return;}if(e.key===" "&&!typing){e.preventDefault();if(rows.length)setCheckout(true);return;}if(checkout){if(e.key==="F3"){e.preventDefault();setPay("debito");}if(e.key==="F4"){e.preventDefault();setPay("credito");}if(e.key==="F6"){e.preventDefault();setPay("dinheiro");}if(e.key==="F7"){e.preventDefault();setPay("pos");setModal("pos");}if(e.key==="F8"){e.preventDefault();setCheckout(false);codeRef.current?.focus();}}};window.addEventListener("keydown",handler);return()=>window.removeEventListener("keydown",handler);},[checkout,cartId,rows,pdv,op,modal,receipt,zreport]);
+ useEffect(()=>{const handler=(e:KeyboardEvent)=>{
+   const el=e.target as HTMLElement; const k=e.key; const lk=k.toLowerCase();
+   // Campo de bipagem vazio não conta como digitação: as teclas de atalho funcionam a partir dele.
+   const typing=(el instanceof HTMLInputElement||el instanceof HTMLTextAreaElement||el instanceof HTMLSelectElement)&&!(el===codeRef.current&&code==="");
+   if(k==="Escape"){e.preventDefault(); if(helpOpen){setHelpOpen(false);return;} if(checkout){setCheckout(false);return;} if(modal){setModal("");return;} return;}
+   if((receipt||zreport)&&k==="Enter"){e.preventDefault();window.print();return;}
+   if(receipt&&k==="F10"){e.preventDefault();setReceiptMode("troca");setTimeout(()=>window.print(),100);return;}
+   if(!typing&&lk==="x"){e.preventDefault();setHelpOpen(v=>!v);return;}
+   if(k==="F1"){e.preventDefault();setCalcExpr("");setModal("calc");return;}
+   if(k==="F2"||k==="F3"){e.preventDefault();void lockOperator();return;}
+   if(k==="F4"){e.preventDefault();payWith("debito");return;}
+   if(k==="F5"){e.preventDefault();payWith("credito");return;}
+   if(k==="F6"){e.preventDefault();payWith("dinheiro");return;}
+   if(k==="F7"){e.preventDefault();payWith("pos");return;}
+   if(k==="F8"){e.preventDefault();setError("PIX ainda não disponível.");return;}
+   if(k==="F9"){e.preventDefault();setPriceQuery("");setPriceResult(null);setModal("price");return;}
+   if(k==="End"&&!typing){e.preventDefault();setModal("discount");return;}
+   if(k==="Delete"&&!typing){e.preventDefault();if(rows.length)setModal("cancel");return;}
+   if(k==="Insert"&&!typing){e.preventDefault();setError("Vendedor ainda não disponível.");return;}
+   if(k==="PageDown"&&!typing){e.preventDefault();setError("Alterar preço ainda não disponível.");return;}
+   if(!typing){
+     if(lk==="w"){e.preventDefault();setModal("recover");return;}
+     if(lk==="t"){e.preventDefault();setModal("trade");return;}
+     if(lk==="z"){e.preventDefault();setModal("z");return;}
+     if(lk==="g"){e.preventDefault();setModal("sangria");return;}
+     if(lk==="r"){e.preventDefault();setError("Devolução ainda não disponível.");return;}
+     if(lk==="d"){e.preventDefault();setError("Cupom de desconto ainda não disponível.");return;}
+     if(k===" "){e.preventDefault();if(rows.length)setCheckout(true);return;}
+   }
+ };window.addEventListener("keydown",handler);return()=>window.removeEventListener("keydown",handler);},[checkout,cartId,rows,pdv,op,modal,receipt,zreport,code,helpOpen]);
  const accent = tenantBrand.cor_primaria === "#0f172a" ? "#4f46e5" : tenantBrand.cor_primaria;
  const cls = {
   field: "w-full rounded-lg border border-slate-800 bg-slate-950/80 px-3 py-2.5 text-sm text-slate-100 placeholder:text-slate-500 outline-none transition focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent)]/30",
@@ -72,7 +138,7 @@ async function applyDiscount(){if(!cartId)return;try{const token=await autorizar
    <div className="order-last flex w-full items-center gap-2 lg:order-none lg:mx-auto lg:w-auto lg:flex-1 lg:max-w-xl">
     <div className="relative flex-1">
      <input ref={codeRef} autoFocus value={code} onChange={e=>setCode(e.target.value)} onKeyDown={e=>e.key==="Enter"&&void scan()} placeholder="Buscar SKU, nome ou código de barras" className={`${cls.field} py-2.5 pl-3 pr-16`}/>
-     <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2"><kbd className={cls.kbd}>Enter</kbd></span>
+     <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2"></span>
     </div>
     <button onClick={()=>void scan()} className={cls.primary}>Buscar</button>
    </div>
@@ -81,8 +147,8 @@ async function applyDiscount(){if(!cartId)return;try{const token=await autorizar
     <span className="hidden text-xs text-slate-400 xl:inline">{data} · {hora}</span>
     <button onClick={()=>setModal("fund")} className={cls.ghost}>Abrir caixa</button>
     <button onClick={()=>setModal("sangria")} className={cls.ghost}>Sangria</button>
-    <button onClick={()=>setModal("z")} className={cls.ghost}>Z · Fechamento</button>
-    <button onClick={()=>void lockOperator()} className={cls.ghost}>N · Sair</button>
+    <button onClick={()=>setModal("z")} className={cls.ghost}>Fechamento</button>
+    <button onClick={()=>void lockOperator()} className={cls.ghost}>Sair</button>
     <a href="/admin/identidade" className={cls.ghost}>Identidade</a>
    </div>
   </header>
@@ -164,29 +230,21 @@ async function applyDiscount(){if(!cartId)return;try{const token=await autorizar
     </div>
 
     <div className="grid grid-cols-3 gap-2 px-5 pb-3">
-     <button onClick={()=>setModal("trade")} className={cls.amber}>Troca <kbd className={cls.kbd}>T</kbd></button>
-     <button onClick={()=>setModal("discount")} disabled={!rows.length} className={`${cls.ghost} justify-center`}>Desconto <kbd className={cls.kbd}>D</kbd></button>
-     <button onClick={()=>setModal("cancel")} disabled={!rows.length} className={`${cls.ghost} justify-center`}>Cancelar <kbd className={cls.kbd}>F9</kbd></button>
+     <button onClick={()=>setModal("trade")} className={cls.amber}>Troca</button>
+     <button onClick={()=>setModal("discount")} disabled={!rows.length} className={`${cls.ghost} justify-center`}>Desconto</button>
+     <button onClick={()=>setModal("cancel")} disabled={!rows.length} className={`${cls.ghost} justify-center`}>Cancelar</button>
     </div>
     <div className="px-5 pb-5">
-     <button onClick={()=>rows.length&&setCheckout(true)} disabled={!rows.length} className={cls.emerald}>Finalizar venda · {brl(a_pagar)} <kbd className="rounded bg-slate-950/20 px-1.5 py-0.5 font-mono text-[11px]">Espaço</kbd></button>
+     <button onClick={()=>rows.length&&setCheckout(true)} disabled={!rows.length} className={cls.emerald}>Finalizar venda · {brl(a_pagar)}</button>
     </div>
    </aside>
   </div>
 
-  <footer className="no-print hidden flex-wrap items-center gap-x-5 gap-y-1 border-t border-slate-800/80 bg-slate-900/90 px-6 py-2 text-xs text-slate-400 lg:flex">
-   <span><kbd className={cls.kbd}>F2</kbd> Recuperar pedido</span>
-   <span><kbd className={cls.kbd}>T</kbd> Troca</span>
-   <span><kbd className={cls.kbd}>D</kbd> Desconto</span>
-   <span><kbd className={cls.kbd}>F9</kbd> Cancelar</span>
-   <span><kbd className={cls.kbd}>Z</kbd> Fechamento</span>
-   <span><kbd className={cls.kbd}>N</kbd> Fechar operador</span>
-   <span><kbd className={cls.kbd}>Espaço</kbd> Finalizar</span>
-  </footer>
+
 
   {checkout&&<div className="no-print fixed inset-0 z-40 grid place-items-center bg-slate-950/70 p-4 backdrop-blur-sm"><section className={`${cls.panel} w-full max-w-lg space-y-4 p-5`}>
-   <div><h2 className="text-lg font-semibold">Pagamento</h2><p className="text-3xl font-bold tabular-nums">{brl(a_pagar)}</p><p className="mt-1 text-xs text-slate-400">F3 Débito · F4 Crédito · F6 Dinheiro · F7 POS · F8 voltar aos itens</p></div>
-   <div className="grid grid-cols-4 gap-2">{[["debito","Débito"],["credito","Crédito"],["dinheiro","Dinheiro"],["pos","POS"]].map(([id,label])=><button key={id} onClick={()=>{setPay(id);if(id==="pos")setModal("pos");}} className={`rounded-lg border px-2 py-2.5 text-sm transition ${pay===id?"border-[var(--accent)] bg-[var(--accent)]/20 text-white":"border-slate-800 text-slate-300 hover:border-slate-700"}`}>{label}</button>)}</div>
+   <div><h2 className="text-lg font-semibold">Pagamento</h2><p className="text-3xl font-bold tabular-nums">{brl(a_pagar)}</p></div>
+   <div className="grid grid-cols-5 gap-2">{[["debito","Débito"],["credito","Crédito"],["dinheiro","Dinheiro"],["pos","POS"],["pix","PIX"]].map(([id,label])=><button key={id} disabled={id==="pix"} onClick={()=>{setPay(id);if(id==="pos")setModal("pos");}} className={`rounded-lg border px-2 py-2.5 text-sm transition ${pay===id?"border-[var(--accent)] bg-[var(--accent)]/20 text-white":"border-slate-800 text-slate-300 hover:border-slate-700"}`}>{label}</button>)}</div>
    {pay==="dinheiro"&&<label className="block space-y-1.5 text-sm text-slate-300">Valor recebido<input value={cash} onChange={e=>setCash(e.target.value)} type="number" step="0.01" className={cls.field}/><span className="block text-xs text-slate-400">Troco: <b className="tabular-nums text-slate-200">{brl(Math.max(0,Number(cash)-a_pagar))}</b></span></label>}
    <label className="block space-y-1.5 text-sm text-slate-300">CPF do cliente<input value={cpf} onChange={e=>void findClient(e.target.value)} className={cls.field} inputMode="numeric"/></label>
    {cpf.length===11&&<div className="grid grid-cols-2 gap-2"><input value={client.nome} onChange={e=>setClient({...client,nome:e.target.value})} placeholder="Nome" className={cls.field}/><input value={client.email} onChange={e=>setClient({...client,email:e.target.value})} placeholder="E-mail" className={cls.field}/></div>}
@@ -195,8 +253,10 @@ async function applyDiscount(){if(!cartId)return;try{const token=await autorizar
   </section></div>}
 
   {modal&&<div className="no-print fixed inset-0 z-40 grid place-items-center bg-slate-950/70 p-4 backdrop-blur-sm"><section className={`${cls.panel} w-full max-w-md space-y-3 p-5`}>
-   <div className="flex items-start justify-between gap-4"><h2 className="font-semibold">{({recover:"Recuperar pedido",trade:"Troca de mercadoria",z:"Fechamento Z — autorização",fund:"Abertura de caixa — fundo de troco",sangria:"Sangria — autorização de liderança",pos:"Dados da maquininha POS",cancel:"Cancelamento protegido",discount:"Desconto manual protegido"} as Record<string,string>)[modal]}</h2><button onClick={()=>setModal("")} className="text-slate-400 hover:text-slate-100" aria-label="Fechar">✕</button></div>
+   <div className="flex items-start justify-between gap-4"><h2 className="font-semibold">{({recover:"Recuperar pedido",trade:"Troca de mercadoria",z:"Fechamento Z — autorização",fund:"Abertura de caixa — fundo de troco",sangria:"Sangria — autorização de liderança",pos:"Dados da maquininha POS",cancel:"Cancelamento protegido",discount:"Desconto manual protegido",calc:"Calculadora",price:"Consultar preço"} as Record<string,string>)[modal]}</h2><button onClick={()=>setModal("")} className="text-slate-400 hover:text-slate-100" aria-label="Fechar">✕</button></div>
    {modal==="recover"&&<Recover onChoose={async id=>{setCartId(id);setCheckout(false);setModal("");await refresh(id);}}/>}
+   {modal==="calc"&&<><input value={calcExpr} onChange={e=>setCalcExpr(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();const r=calcEval(calcExpr);if(r!==null)setCalcExpr(String(r));}}} placeholder="Ex.: 12,5*3+10" className={`${cls.field} text-right text-xl tabular-nums`}/><div className="grid grid-cols-4 gap-2">{["7","8","9","/","4","5","6","*","1","2","3","-","0",".","C","+"].map(t=><button key={t} onClick={()=>setCalcExpr(t==="C"?"":calcExpr+t)} className={`${cls.ghost} justify-center py-3 text-base`}>{t}</button>)}<button onClick={()=>{const r=calcEval(calcExpr);if(r!==null)setCalcExpr(String(r));}} className={`${cls.primary} col-span-4 justify-center`}>=</button></div></>}
+   {modal==="price"&&<><div className="flex gap-2"><input value={priceQuery} onChange={e=>setPriceQuery(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")void consultPrice();}} placeholder="Código de barras ou SKU" autoFocus className={cls.field}/><button onClick={()=>void consultPrice()} className={cls.primary}>Consultar</button></div>{priceResult==="nao"&&<p className="text-sm text-red-400">Produto não encontrado.</p>}{priceResult&&priceResult!=="nao"&&<div className="rounded-xl border border-slate-800 bg-slate-950/60 p-4"><p className="font-medium">{priceResult.produto?.nome}</p><p className="text-xs text-slate-400">{priceResult.cor} · {priceResult.tamanho} · SKU {priceResult.sku}</p><p className="mt-2 text-2xl font-bold tabular-nums text-emerald-400">{brl(priceResult.preco)}</p><p className="text-xs text-slate-400">{Number(priceResult.estoque)>0?`${priceResult.estoque} em estoque`:"Sem estoque"}</p></div>}</>}
    {modal==="trade"&&<><input value={returnCode} onChange={e=>setReturnCode(e.target.value)} placeholder="Código/SKU devolvido" className={cls.field}/><input value={returnNf} onChange={e=>setReturnNf(e.target.value)} placeholder="Número da Nota Fiscal" className={cls.field}/><input value={returnValue} onChange={e=>setReturnValue(e.target.value)} placeholder="Valor de crédito" type="number" step="0.01" className={cls.field}/><button onClick={()=>void addReturn()} className={`${cls.primary} w-full`}>Adicionar troca ao pedido</button></>}
    {modal==="z"&&<><p className="text-sm text-slate-400">Líder, supervisor ou gerente autoriza o encerramento e fica registrado no Z.</p><input value={managerChapa} onChange={e=>setManagerChapa(e.target.value)} placeholder="Chapa da liderança" className={cls.field}/><input value={managerPin} onChange={e=>setManagerPin(e.target.value)} placeholder="Senha de 6 dígitos" type="password" className={cls.field}/><input value={reason} onChange={e=>setReason(e.target.value)} placeholder="Motivo do fechamento" className={cls.field}/><button onClick={()=>void closeZ()} className={`${cls.primary} w-full`}>Autorizar e fechar dia</button></>}
    {modal==="fund"&&<><p className="text-sm text-slate-400">Abertura antes da primeira venda do dia. Exige liderança.</p><input value={fund} onChange={e=>setFund(e.target.value)} placeholder="Fundo de troco" type="number" step="0.01" className={cls.field}/><input value={managerChapa} onChange={e=>setManagerChapa(e.target.value)} placeholder="Chapa da liderança" className={cls.field}/><input value={managerPin} onChange={e=>setManagerPin(e.target.value)} placeholder="Senha de 6 dígitos" type="password" className={cls.field}/><input value={reason} onChange={e=>setReason(e.target.value)} placeholder="Motivo da abertura" className={cls.field}/><button onClick={()=>void openTill()} className={`${cls.primary} w-full`}>Abrir caixa</button></>}
@@ -207,8 +267,15 @@ async function applyDiscount(){if(!cartId)return;try{const token=await autorizar
    {error&&<p className="text-sm text-red-400">{error}</p>}
   </section></div>}
 
-  {receipt&&<div className="receipt-overlay"><div className="no-print rounded-2xl border border-slate-800 bg-slate-900 p-4 text-slate-100 shadow-2xl"><div className="mb-3 flex flex-wrap gap-2"><button autoFocus onClick={()=>window.print()} className={cls.primary}>Imprimir venda (Enter)</button><button onClick={()=>{setReceiptMode("troca");setTimeout(()=>window.print(),100);}} className={cls.ghost}>F10 · Cupom de troca sem preços</button><button onClick={()=>setReceipt(null)} className={cls.ghost}>Fechar</button></div><BobinaTermica venda={receipt}/></div><div className="print-only"><BobinaTermica venda={receipt} troca={receiptMode==="troca"}/></div></div>}
-  {zreport&&<div className="receipt-overlay"><div className="no-print rounded-2xl border border-slate-800 bg-slate-900 p-4 text-slate-100 shadow-2xl"><div className="mb-3 flex gap-2"><button autoFocus onClick={()=>window.print()} className={cls.primary}>Imprimir Relatório Z (Enter)</button><button onClick={()=>setZreport(null)} className={cls.ghost}>Fechar</button></div><BobinaTermica relatorio={zreport}/></div><div className="print-only"><BobinaTermica relatorio={zreport}/></div></div>}
+  {receipt&&<div className="receipt-overlay"><div className="no-print rounded-2xl border border-slate-800 bg-slate-900 p-4 text-slate-100 shadow-2xl"><div className="mb-3 flex flex-wrap gap-2"><button autoFocus onClick={()=>window.print()} className={cls.primary}>Imprimir venda</button><button onClick={()=>{setReceiptMode("troca");setTimeout(()=>window.print(),100);}} className={cls.ghost}>Cupom de troca sem preços</button><button onClick={()=>setReceipt(null)} className={cls.ghost}>Fechar</button></div><BobinaTermica venda={receipt}/></div><div className="print-only"><BobinaTermica venda={receipt} troca={receiptMode==="troca"}/></div></div>}
+  {zreport&&<div className="receipt-overlay"><div className="no-print rounded-2xl border border-slate-800 bg-slate-900 p-4 text-slate-100 shadow-2xl"><div className="mb-3 flex gap-2"><button autoFocus onClick={()=>window.print()} className={cls.primary}>Imprimir Relatório Z</button><button onClick={()=>setZreport(null)} className={cls.ghost}>Fechar</button></div><BobinaTermica relatorio={zreport}/></div><div className="print-only"><BobinaTermica relatorio={zreport}/></div></div>}
+  {helpOpen&&<div className="no-print fixed inset-0 z-50 grid place-items-center bg-slate-950/70 p-4 backdrop-blur-sm" onClick={()=>setHelpOpen(false)}><section onClick={e=>e.stopPropagation()} className={`${cls.panel} w-full max-w-lg space-y-3 p-5`}>
+   <div className="flex items-center justify-between"><h2 className="font-semibold">Teclas do caixa</h2><button onClick={()=>setHelpOpen(false)} className="text-slate-400 hover:text-slate-100" aria-label="Fechar">✕</button></div>
+   <table className="w-full text-sm"><tbody>
+    {HELP_KEYS.map(([tecla,funcao,estado])=><tr key={tecla} className="border-b border-slate-800/60"><td className="py-2 pr-3 align-top"><kbd className={cls.kbd}>{tecla}</kbd></td><td className="py-2 text-slate-200">{funcao}{estado&&<span className="ml-2 rounded bg-slate-800 px-1.5 py-0.5 text-[11px] text-slate-400">{estado}</span>}</td></tr>)}
+   </tbody></table>
+   <p className="text-xs text-slate-500">Pressione X de novo ou Esc para fechar.</p>
+  </section></div>}
  </main>;
 }
 
