@@ -92,7 +92,7 @@ export async function POST(request: NextRequest) {
   const gerentePin = text(body.gerentePin, 6);
 
   if (!nomeFantasia || !/^\d{14}$/.test(cnpj) || !pdvCodigo || !pdvNome || !gerenteNome || !/^\d{11}$/.test(gerenteCpf) || !/^[A-Za-z0-9-]{1,20}$/.test(gerenteChapa) || !/^\d{6}$/.test(gerentePin)) {
-    return NextResponse.json({ error: "Confira os campos obrigatórios, o CNPJ, o CPF, a chapa e o PIN de 6 dígitos." }, { status: 400 });
+    return NextResponse.json({ error: "Confira os campos obrigatórios, o CNPJ, o CPF, a matrícula e o PIN de 6 dígitos." }, { status: 400 });
   }
 
   // A senha do Supabase Auth é aleatória e nunca é o PIN. O PIN só é usado no banco, em hash.
@@ -135,7 +135,7 @@ export async function POST(request: NextRequest) {
     const duplicate = /duplicate key|unique constraint/i.test(error.message);
     return NextResponse.json({
       error: duplicate
-        ? "CNPJ ou chapa já cadastrado. Confira os dados e tente novamente."
+        ? "CNPJ ou matrícula já cadastrada. Confira os dados e tente novamente."
         : "Não foi possível salvar o cadastro. Confirme se a migração schema-v7.sql foi aplicada no Supabase.",
     }, { status: duplicate ? 409 : 500 });
   }
